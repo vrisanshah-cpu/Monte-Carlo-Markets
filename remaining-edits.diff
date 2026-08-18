@@ -1,0 +1,189 @@
+diff --git a/components/contests/ContestEntryForm.tsx b/components/contests/ContestEntryForm.tsx
+index old..new 100644
+--- a/components/contests/ContestEntryForm.tsx
++++ b/components/contests/ContestEntryForm.tsx
+@@ -9,11 +9,19 @@ import { DEFAULT_ALLOCATIONS } from '@/lib/assets';
+ import { DEFAULT_SIM_CONFIG, type SimConfig, type LifeEvent } from '@/lib/simulation';
+ import { submitSimulation } from '@/actions/submissions';
+ import { createClient } from '@/lib/supabase/client';
++import type { Challenge } from '@/lib/types/challenge';
+ 
+ interface ChallengeRow {
+   id: string;
+   years: number;
+   initial_balance: number;
++  asset_universe?: any[];
++  scripted_shocks?: any[];
++  min_green_allocation?: number;
++  max_carbon_intensity?: number;
++  carbon_tax_onset_year?: number;
+   climate_scenario: string | null;
+   physical_risk_intensity: number;
+   tipping_point_prob: number;
+@@ -51,7 +59,19 @@ export function ContestEntryForm({ challenge }: { challenge: ChallengeRow }) {
+     },
+   }));
+   const [lifeEvents, setLifeEvents] = useState<LifeEvent[]>([]);
++  const [shocksEnabled, setShocksEnabled] = useState(true);
+   const [submitting, setSubmitting] = useState(false);
+   const [submitError, setSubmitError] = useState<string | null>(null);
+   const [checkingAuth, setCheckingAuth] = useState(true);
+   const [isLoggedIn, setIsLoggedIn] = useState(false);
+   const { result, run } = useSimulation();
+@@ -70,11 +90,22 @@ export function ContestEntryForm({ challenge }: { challenge: ChallengeRow }) {
+   const patch = (p: Partial<SimConfig>) => setConfig((c) => ({ ...c, ...p }));
+   const handleRun = () => run({ ...config, lifeEvents });
+ 
++  // Validate green allocation constraint if contest specifies one
++  const greenAllocation = challenge.min_green_allocation 
++    ? Object.entries(config.allocations)
++        .filter(([id]) => challenge.asset_universe?.some(a => a.id === id && a.type === 'green'))
++        .reduce((sum, [, val]) => sum + (val || 0), 0) / 100
++    : null;
++  
++  const meetsGreenConstraint = !challenge.min_green_allocation || (greenAllocation ?? 0) >= challenge.min_green_allocation;
++
+   const handleSubmitEntry = async () => {
+     if (!isLoggedIn) {
+       router.push(`/login?redirect=/contests/${challenge.id}`);
+       return;
+     }
++    if (!meetsGreenConstraint) {
++      setSubmitError(`Portfolio must have at least ${Math.round(challenge.min_green_allocation! * 100)}% green allocation`);
++      return;
++    }
+     setSubmitting(true);
+     setSubmitError(null);
+     try {
+@@ -83,6 +114,7 @@ export function ContestEntryForm({ challenge }: { challenge: ChallengeRow }) {
+         challengeId: challenge.id,
+         mode: 'contest',
+         allocations: config.allocations,
++        shocksEnabled,
+         simConfig: { ...config, lifeEvents },
+       });
+       router.push(`/contests/${challenge.id}/leaderboard`);
+@@ -124,6 +156,20 @@ export function ContestEntryForm({ challenge }: { challenge: ChallengeRow }) {
+           Run Simulation
+         </button>
+
++        {/* Scripted shocks toggle if contest defines them */}
++        {challenge.scripted_shocks && challenge.scripted_shocks.length > 0 && (
++          <label className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/50 px-3 py-2 text-xs text-slate-300">
++            <input
++              type="checkbox"
++              checked={shocksEnabled}
++              onChange={(e) => setShocksEnabled(e.target.checked)}
++              className="h-4 w-4 rounded border-slate-600 bg-slate-800 accent-cyan-500"
++            />
++            Apply scripted shocks to this run
++          </label>
++        )}
++
+         {result && (
+           <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
+             <FanChart result={result} years={config.years} />
+@@ -138,6 +184,23 @@ export function ContestEntryForm({ challenge }: { challenge: ChallengeRow }) {
+         )}
+         {submitError && <p className="text-xs text-rose-400">{submitError}</p>}
++
++        {/* Green allocation constraint indicator */}
++        {challenge.min_green_allocation && (
++          <div className={`rounded-lg px-3 py-2 text-xs ${
++            meetsGreenConstraint
++              ? 'border border-emerald-700/50 bg-emerald-950/30 text-emerald-300'
++              : 'border border-rose-700/50 bg-rose-950/30 text-rose-300'
++          }`}>
++            {meetsGreenConstraint ? '✓' : '✗'} Green allocation: {greenAllocation ? (greenAllocation * 100).toFixed(0) : 0}% 
++            (required: {Math.round(challenge.min_green_allocation * 100)}%)
++          </div>
++        )}
++
+         <button
+           onClick={handleSubmitEntry}
+           disabled={!result || submitting || checkingAuth || !meetsGreenConstraint}
+           className="w-full rounded-lg bg-emerald-600 py-3 text-sm font-semibold text-white hover:bg-emerald-500 disabled:opacity-50"
+         >
+diff --git a/actions/submissions.ts b/actions/submissions.ts
+index old..new 100644
+--- a/actions/submissions.ts
++++ b/actions/submissions.ts
+@@ -6,11 +6,13 @@ import { computeCompositeScore } from '@/lib/scoring';
+ import { sharpeRatio } from '@/lib/stats';
+ import { revalidatePath } from 'next/cache';
+ 
+ interface SubmitParams {
+   challengeId: string | null;
+   mode: 'sandbox' | 'contest' | 'game';
+   allocations: Record<string, number>;
+   simConfig: SimConfig;
++  shocksEnabled?: boolean;
+   weights?: { sharpe: number; climateVar: number; tempRise: number };
+ }
+ 
+ export async function submitSimulation(params: SubmitParams) {
+@@ -21,9 +23,28 @@ export async function submitSimulation(params: SubmitParams) {
+   if (!user) throw new Error('Not authenticated');
+ 
+   // Re-run the simulation server-side so results can't be fabricated client-side.
+-  const result = runSimulation(params.simConfig);
++  // If contest has scripted shocks and user enabled them, merge them into the sim config
++  let simConfigWithShocks = params.simConfig;
++  
++  if (params.shocksEnabled && params.challengeId) {
++    const { data: challenge } = await supabase
++      .from('challenges')
++      .select('scripted_shocks')
++      .eq('id', params.challengeId)
++      .single();
++    
++    if (challenge?.scripted_shocks?.length > 0) {
++      simConfigWithShocks = {
++        ...params.simConfig,
++        // Merge scripted shocks with any user-added life events
++        // Shocks are applied as negative/positive cash flows in specific years
++        lifeEvents: (params.simConfig.lifeEvents || []).concat(
++          challenge.scripted_shocks.map((shock: any) => ({
++            id: `shock-${shock.name}`,
++            year: shock.year,
++            amount: shock.magnitude * params.simConfig.initialBalance,
++            label: shock.name,
++          }))
++        ),
++      };
++    }
++  }
++
++  const result = runSimulation(simConfigWithShocks);
+ 
+   const monthlyReturns: number[] = [];
+   for (let i = 1; i < result.median.length; i++) {
+diff --git a/actions/challenges.ts b/actions/challenges.ts
+index old..new 100644
+--- a/actions/challenges.ts
++++ b/actions/challenges.ts
+@@ -1,6 +1,7 @@
+ 'use server';
+ 
+ import { createClient, createAdminClient } from '@/lib/supabase/server';
++import type { AssetClass, ScriptedShock } from '@/lib/types/challenge';
+ import { revalidatePath } from 'next/cache';
+ 
+ async function assertAdmin() {
+@@ -20,6 +21,8 @@ export interface ChallengePayload {
+   slug: string;
+   title: string;
+   tagline?: string;
+   description?: string;
+   theme?: string;
+   max_carbon_intensity?: number | null;
+@@ -33,6 +36,8 @@ export interface ChallengePayload {
+   status?: 'draft' | 'active' | 'archived';
+   starts_at?: string | null;
+   ends_at?: string | null;
+   prize_tiers?: { rank: number; label: string; reward: string }[];
++  asset_universe?: AssetClass[];
++  scripted_shocks?: ScriptedShock[];
+ }
+ 
+ export async function listChallenges() {

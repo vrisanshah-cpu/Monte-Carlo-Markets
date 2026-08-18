@@ -1,4 +1,4 @@
-import Link from 'next/link';
+﻿import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { createClient } from '@/lib/supabase/server';
 import { ContestEntryForm } from '@/components/contests/ContestEntryForm';
@@ -32,15 +32,15 @@ export default async function ContestDetailPage({
       <p className="mb-6 text-sm leading-relaxed text-slate-400">{challenge.description}</p>
 
       <div className="mb-8 grid grid-cols-2 gap-3 rounded-xl border border-slate-800 bg-slate-900/60 p-4 text-xs md:grid-cols-4">
-        <Rule label="Scenario" value={challenge.climate_scenario ?? '—'} />
+        <Rule label="Scenario" value={challenge.climate_scenario ?? 'â€”'} />
         <Rule label="Horizon" value={`${challenge.years} yrs`} />
         <Rule
           label="Min green alloc"
-          value={challenge.min_green_allocation ? `${challenge.min_green_allocation * 100}%` : '—'}
+          value={challenge.min_green_allocation ? `${challenge.min_green_allocation * 100}%` : 'â€”'}
         />
         <Rule
           label="Max carbon intensity"
-          value={challenge.max_carbon_intensity ? `${challenge.max_carbon_intensity} t/$M` : '—'}
+          value={challenge.max_carbon_intensity ? `${challenge.max_carbon_intensity} t/$M` : 'â€”'}
         />
       </div>
 
