@@ -1,9 +1,6 @@
-﻿import { notFound, redirect } from 'next/navigation';
+import { notFound } from 'next/navigation';
 import { createClient } from '@/lib/supabase/server';
-import {
-  getCompetitionBrief,
-  getCompetitionState,
-} from '@/actions/trading';
+import { getCompetitionBrief, getCompetitionState, joinCompetition } from '@/actions/trading';
 import { CompetitionDetailClient } from '@/components/competitions/CompetitionDetailClient';
 
 export default async function CompetitionPage({
@@ -12,15 +9,14 @@ export default async function CompetitionPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-
   const supabase = await createClient();
-
   const {
     data: { user },
   } = await supabase.auth.getUser();
 
   if (!user) {
-    redirect(`/login?redirect=/competitions/${id}`);
+    // Redirect to login if not authenticated
+    notFound();
   }
 
   try {
@@ -30,6 +26,7 @@ export default async function CompetitionPage({
       notFound();
     }
 
+    // Check if user is joined
     let state = null;
     let isJoined = false;
 
@@ -40,6 +37,7 @@ export default async function CompetitionPage({
       isJoined = false;
     }
 
+    // Pass to client component for interactivity
     return (
       <CompetitionDetailClient
         competition={competition}
